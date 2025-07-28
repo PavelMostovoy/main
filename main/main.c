@@ -1,0 +1,248 @@
+#include "soc/soc_caps.h"
+
+#include <inttypes.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/i2c.h"
+#include "driver/spi_master.h"
+#include "driver/gpio.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_ldo_regulator.h"
+#include "esp_dma_utils.h"
+#include "esp_lcd_mipi_dsi.h"
+#include "esp_lcd_dsi.h"
+
+
+
+#define LCD_H_RES          (1280)
+#define LCD_V_RES          (720)
+#define LCD_BIT_PER_PIXEL  (24)
+#define PIN_NUM_LCD_RST      (- 1) //27
+#define PIN_NUM_BK_LIGHT        (-1)        // вывод для бэклайта, или -1 если не используется
+#define LCD_BK_LIGHT_ON_LEVEL (1)
+#define LCD_BK_LIGHT_OFF_LEVEL !LCD_BK_LIGHT_ON_LEVEL
+static const char *TAG = "DEBUG +++++++++ log : ";
+
+#define MIPI_DPI_PX_FORMAT (LCD_COLOR_PIXEL_FORMAT_RGB888)
+#define DELAY_TIME_MS (3000)
+
+#define MIPI_DSI_PHY_PWR_LDO_CHAN (3)
+#define MIPI_DSI_PHY_PWR_LDO_VOLTAGE_MV (2500)
+
+
+#define TEST_ASSERT_EQUAL_HEX32(expected, actual)
+#define TEST_ESP_OK(rc) TEST_ASSERT_EQUAL_HEX32(ESP_OK, rc)
+#define TEST_ESP_ERR(err, rc) TEST_ASSERT_EQUAL_HEX32(err, rc)
+#define TEST_ASSERT_NOT_NULL(pointer)
+
+static esp_ldo_channel_handle_t ldo_mipi_phy = NULL;
+static esp_lcd_panel_handle_t panel_handle = NULL;
+static esp_lcd_dsi_bus_handle_t mipi_dsi_bus = NULL;
+static esp_lcd_panel_io_handle_t mipi_dbi_io = NULL;
+static SemaphoreHandle_t refresh_finish = NULL;
+
+IRAM_ATTR static bool test_notify_refresh_ready(esp_lcd_panel_handle_t panel, esp_lcd_dpi_panel_event_data_t *edata, void *user_ctx)
+{
+    SemaphoreHandle_t refresh_finish = (SemaphoreHandle_t)user_ctx;
+    BaseType_t need_yield = pdFALSE;
+
+    xSemaphoreGiveFromISR(refresh_finish, &need_yield);
+
+    return (need_yield == pdTRUE);
+}
+
+i2c_master_bus_handle_t i2c_bus_handle = NULL;
+
+// static void init_i2c_bus(void) {
+//     i2c_master_bus_config_t i2c_mst_config = {
+//         .clk_source = I2C_CLK_SRC_DEFAULT,
+//         .i2c_port = I2C_NUM_1,
+//         .scl_io_num = GPIO_NUM_8,
+//         .sda_io_num = GPIO_NUM_7,
+//         .glitch_ignore_cnt = 7,
+//         .flags.enable_internal_pullup = true,
+//     };
+//
+//     ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_mst_config, &i2c_bus_handle));
+//     ESP_LOGI(TAG, "I2C1 initialized with NG driver on SDA=7 SCL=8");
+// }
+
+
+static void test_init_lcd(void)
+{
+    // init_i2c_bus();
+
+#if TEST_PIN_NUM_BK_LIGHT >= 0
+    ESP_LOGI(TAG, "Turn on LCD backlight");
+    gpio_config_t bk_gpio_config = {
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = 1ULL << PIN_NUM_BK_LIGHT};
+    TEST_ESP_OK(gpio_config(&bk_gpio_config));
+    TEST_ESP_OK(gpio_set_level(TEST_PIN_NUM_BK_LIGHT, TEST_LCD_BK_LIGHT_ON_LEVEL));
+#endif
+
+    // Turn on the power for MIPI DSI PHY, so it can go from "No Power" state to "Shutdown" state
+
+    ESP_LOGI(TAG, "MIPI DSI PHY Powered on");
+    esp_ldo_channel_config_t ldo_mipi_phy_config = {
+        .chan_id = MIPI_DSI_PHY_PWR_LDO_CHAN,
+        .voltage_mv = MIPI_DSI_PHY_PWR_LDO_VOLTAGE_MV,
+    };
+    // TEST_ESP_OK(esp_ldo_acquire_channel(&ldo_mipi_phy_config, &ldo_mipi_phy));
+    esp_ldo_acquire_channel(&ldo_mipi_phy_config, &ldo_mipi_phy);
+
+
+    ESP_LOGI(TAG, "Initialize MIPI DSI bus");
+    esp_lcd_dsi_bus_config_t bus_config = DSI_PANEL_BUS_DSI_2CH_CONFIG();
+    // TEST_ESP_OK(esp_lcd_new_dsi_bus(&bus_config, &mipi_dsi_bus));
+    esp_lcd_new_dsi_bus(&bus_config, &mipi_dsi_bus);
+
+    ESP_LOGI(TAG, "Install panel IO");
+    esp_lcd_dbi_io_config_t dbi_config = DSI_PANEL_IO_DBI_CONFIG();
+    // TEST_ESP_OK(esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &mipi_dbi_io));
+    esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &mipi_dbi_io);
+    ESP_LOGI(TAG, "Install panel OK");
+
+    ESP_LOGI(TAG, "Install LCD driver of dsi");
+    esp_lcd_dpi_panel_config_t dpi_config = DSI_PANEL_DPI_7_INCH_H_CONFIG(MIPI_DPI_PX_FORMAT);
+    dsi_vendor_config_t vendor_config = {
+        .mipi_config = {
+            .dsi_bus = mipi_dsi_bus,
+            .dpi_config = &dpi_config,
+        },
+    };
+    ESP_LOGI(TAG, "Install LCD driver of dsi - OK");
+    const esp_lcd_panel_dev_config_t panel_config = {
+        .reset_gpio_num = PIN_NUM_LCD_RST,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .bits_per_pixel = LCD_BIT_PER_PIXEL,
+        .vendor_config = &vendor_config,
+    };
+    ESP_LOGI(TAG, "Constant added");
+
+    ESP_LOGI(TAG, "New panel");
+    // TEST_ESP_OK(esp_lcd_new_panel_dsi(mipi_dbi_io, &panel_config, &panel_handle));
+    esp_lcd_new_panel_dsi(mipi_dbi_io, &panel_config, &panel_handle);
+    ESP_LOGI(TAG, "ok");
+
+
+    ESP_LOGI(TAG, "Panel reset");
+    // TEST_ESP_OK(esp_lcd_panel_reset(panel_handle));
+    esp_lcd_panel_reset(panel_handle);
+    ESP_LOGI(TAG, "ok");
+
+
+
+    ESP_LOGI(TAG, "Panel init");
+    // TEST_ESP_OK(esp_lcd_panel_init(panel_handle));
+    esp_lcd_panel_init(panel_handle);
+    ESP_LOGI(TAG, "ok");
+
+
+
+    ESP_LOGI(TAG, "Panel on/off");
+    // TEST_ESP_OK(esp_lcd_panel_disp_on_off(panel_handle, true));
+    esp_lcd_panel_disp_on_off(panel_handle, true);
+    ESP_LOGI(TAG, "ok");
+
+    refresh_finish = xSemaphoreCreateBinary();
+    TEST_ASSERT_NOT_NULL(refresh_finish);
+    esp_lcd_dpi_panel_event_callbacks_t cbs = {
+        .on_color_trans_done = test_notify_refresh_ready,
+    };
+    // TEST_ESP_OK(esp_lcd_dpi_panel_register_event_callbacks(panel_handle, &cbs, refresh_finish));
+    ESP_LOGI(TAG, "Add callback event");
+    esp_lcd_dpi_panel_register_event_callbacks(panel_handle, &cbs, refresh_finish);
+    ESP_LOGI(TAG, "ok");
+}
+
+static void test_deinit_lcd(void)
+{
+    TEST_ESP_OK(esp_lcd_panel_del(panel_handle));
+    TEST_ESP_OK(esp_lcd_panel_io_del(mipi_dbi_io));
+    TEST_ESP_OK(esp_lcd_del_dsi_bus(mipi_dsi_bus));
+    panel_handle = NULL;
+    mipi_dbi_io = NULL;
+    mipi_dsi_bus = NULL;
+
+    if (ldo_mipi_phy)
+    {
+        TEST_ESP_OK(esp_ldo_release_channel(ldo_mipi_phy));
+        ldo_mipi_phy = NULL;
+    }
+
+    vSemaphoreDelete(refresh_finish);
+    refresh_finish = NULL;
+
+#if TEST_PIN_NUM_BK_LIGHT >= 0
+    TEST_ESP_OK(gpio_reset_pin(TEST_PIN_NUM_BK_LIGHT));
+#endif
+}
+
+static void test_draw_color_bar(esp_lcd_panel_handle_t panel_handle, uint16_t h_res, uint16_t v_res)
+{
+    uint8_t byte_per_pixel = (LCD_BIT_PER_PIXEL + 7) / 8;
+    uint16_t row_line = v_res / byte_per_pixel / 8;
+    uint8_t *color = (uint8_t *)heap_caps_calloc(1, row_line * h_res * byte_per_pixel, MALLOC_CAP_DMA);
+
+    for (int j = 0; j < byte_per_pixel * 8; j++) {
+        for (int i = 0; i < row_line * h_res; i++) {
+            for (int k = 0; k < byte_per_pixel; k++) {
+                color[i * byte_per_pixel + k] = (BIT(j) >> (k * 8)) & 0xff;
+            }
+        }
+        ESP_LOGI(TAG, "Inside Loop");
+        TEST_ESP_OK(esp_lcd_panel_draw_bitmap(panel_handle, 0, j * row_line, h_res, (j + 1) * row_line, color));
+        ESP_LOGI(TAG, "After calling draw ");
+        xSemaphoreTake(refresh_finish, portMAX_DELAY);
+    }
+
+    uint16_t color_line = row_line * byte_per_pixel * 8;
+    uint16_t res_line = v_res - color_line;
+    if (res_line) {
+        for (int i = 0; i < res_line * h_res; i++) {
+            for (int k = 0; k < byte_per_pixel; k++) {
+                color[i * byte_per_pixel + k] = 0xff;
+            }
+        }
+        TEST_ESP_OK(esp_lcd_panel_draw_bitmap(panel_handle, 0, color_line, h_res, v_res, color));
+        xSemaphoreTake(refresh_finish, portMAX_DELAY);
+    }
+
+    free(color);
+}
+
+
+void app_main(void) {
+    ESP_LOGI(TAG, "Hello ESP32‑P4");
+
+    ESP_LOGI(TAG, "Initialize LCD device");
+    test_init_lcd();
+
+    // TEST_ESP_OK(esp_lcd_dpi_panel_set_pattern(panel_handle, MIPI_DSI_PATTERN_BAR_HORIZONTAL));
+
+    // uint8_t green_pixel[3] = {0x00, 0xFF, 0x00};
+    //
+    // for (int y = 0; y < 20 ; y++) {
+    //     for (int x = 0; x < 20; x++) {
+    //         // TEST_ESP_OK(esp_lcd_panel_draw_bitmap(panel_handle, x, y, x + 1, y + 1, green_pixel));
+    //         esp_lcd_panel_draw_bitmap(panel_handle, x, y, x + 1, y + 1, green_pixel);
+    //         ESP_LOGI(TAG, "display pixel");
+    //         vTaskDelay(pdMS_TO_TICKS(10));
+    //     }
+    // }
+
+    ESP_LOGI(TAG, "Show color bar pattern drawn by hardware");
+    esp_lcd_dpi_panel_set_pattern(panel_handle, MIPI_DSI_PATTERN_BAR_HORIZONTAL);
+
+    ESP_LOGI(TAG, "Show color bar drawn by software");
+    test_draw_color_bar(panel_handle, LCD_H_RES, LCD_V_RES);
+    vTaskDelay(pdMS_TO_TICKS(DELAY_TIME_MS));
+
+    ESP_LOGI(TAG, "End of test");
+    test_deinit_lcd();
+
+}
