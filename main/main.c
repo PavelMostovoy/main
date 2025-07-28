@@ -5,7 +5,6 @@
 #include "freertos/task.h"
 #include "driver/i2c.h"
 #include "driver/spi_master.h"
-#include "driver/gpio.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_lcd_panel_ops.h"
@@ -14,7 +13,7 @@
 #include "esp_dma_utils.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_dsi.h"
-
+#include "driver/i2c_master.h"
 
 
 #define LCD_H_RES          (1280)
@@ -49,9 +48,25 @@ IRAM_ATTR static bool test_notify_refresh_ready(esp_lcd_panel_handle_t panel, es
 }
 
 i2c_master_bus_handle_t i2c_bus_handle = NULL;
+static void init_i2c_bus(void) {
+    i2c_master_bus_config_t i2c_mst_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = I2C_NUM_1,
+        .scl_io_num = 8,
+        .sda_io_num = 7,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+
+    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_mst_config, &i2c_bus_handle));
+    ESP_LOGI(TAG, "I2C1 initialized with NG driver on SDA=7 SCL=8");
+}
 
 static void test_init_lcd(void)
 {
+    // Remove error about i2c enabling
+    init_i2c_bus();
+    vTaskDelay(pdMS_TO_TICKS(DELAY_TIME_MS/2));
 
     // Turn on the power for MIPI DSI PHY, so it can go from "No Power" state to "Shutdown" state
 
