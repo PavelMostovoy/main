@@ -21,7 +21,7 @@
 #define LCD_V_RES          (720)
 #define LCD_BIT_PER_PIXEL  (24)
 #define PIN_NUM_LCD_RST      (- 1) //27
-#define PIN_NUM_BK_LIGHT        (-1)        // вывод для бэклайта, или -1 если не используется
+#define PIN_NUM_BK_LIGHT        (-1)
 #define LCD_BK_LIGHT_ON_LEVEL (1)
 #define LCD_BK_LIGHT_OFF_LEVEL !LCD_BK_LIGHT_ON_LEVEL
 static const char *TAG = "DEBUG +++++++++ log : ";
@@ -56,21 +56,6 @@ IRAM_ATTR static bool test_notify_refresh_ready(esp_lcd_panel_handle_t panel, es
 
 i2c_master_bus_handle_t i2c_bus_handle = NULL;
 
-// static void init_i2c_bus(void) {
-//     i2c_master_bus_config_t i2c_mst_config = {
-//         .clk_source = I2C_CLK_SRC_DEFAULT,
-//         .i2c_port = I2C_NUM_1,
-//         .scl_io_num = GPIO_NUM_8,
-//         .sda_io_num = GPIO_NUM_7,
-//         .glitch_ignore_cnt = 7,
-//         .flags.enable_internal_pullup = true,
-//     };
-//
-//     ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_mst_config, &i2c_bus_handle));
-//     ESP_LOGI(TAG, "I2C1 initialized with NG driver on SDA=7 SCL=8");
-// }
-
-
 static void test_init_lcd(void)
 {
     // init_i2c_bus();
@@ -97,13 +82,13 @@ static void test_init_lcd(void)
 
     ESP_LOGI(TAG, "Initialize MIPI DSI bus");
     esp_lcd_dsi_bus_config_t bus_config = DSI_PANEL_BUS_DSI_2CH_CONFIG();
-    // TEST_ESP_OK(esp_lcd_new_dsi_bus(&bus_config, &mipi_dsi_bus));
-    esp_lcd_new_dsi_bus(&bus_config, &mipi_dsi_bus);
+    TEST_ESP_OK(esp_lcd_new_dsi_bus(&bus_config, &mipi_dsi_bus));
+    // esp_lcd_new_dsi_bus(&bus_config, &mipi_dsi_bus);
 
     ESP_LOGI(TAG, "Install panel IO");
     esp_lcd_dbi_io_config_t dbi_config = DSI_PANEL_IO_DBI_CONFIG();
-    // TEST_ESP_OK(esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &mipi_dbi_io));
-    esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &mipi_dbi_io);
+    TEST_ESP_OK(esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &mipi_dbi_io));
+    // esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &mipi_dbi_io);
     ESP_LOGI(TAG, "Install panel OK");
 
     ESP_LOGI(TAG, "Install LCD driver of dsi");
@@ -124,28 +109,28 @@ static void test_init_lcd(void)
     ESP_LOGI(TAG, "Constant added");
 
     ESP_LOGI(TAG, "New panel");
-    // TEST_ESP_OK(esp_lcd_new_panel_dsi(mipi_dbi_io, &panel_config, &panel_handle));
-    esp_lcd_new_panel_dsi(mipi_dbi_io, &panel_config, &panel_handle);
+    TEST_ESP_OK(esp_lcd_new_panel_dsi(mipi_dbi_io, &panel_config, &panel_handle));
+    // esp_lcd_new_panel_dsi(mipi_dbi_io, &panel_config, &panel_handle);
     ESP_LOGI(TAG, "ok");
 
 
     ESP_LOGI(TAG, "Panel reset");
-    // TEST_ESP_OK(esp_lcd_panel_reset(panel_handle));
-    esp_lcd_panel_reset(panel_handle);
+    TEST_ESP_OK(esp_lcd_panel_reset(panel_handle));
+    // esp_lcd_panel_reset(panel_handle);
     ESP_LOGI(TAG, "ok");
 
 
 
     ESP_LOGI(TAG, "Panel init");
-    // TEST_ESP_OK(esp_lcd_panel_init(panel_handle));
-    esp_lcd_panel_init(panel_handle);
+    TEST_ESP_OK(esp_lcd_panel_init(panel_handle));
+    // esp_lcd_panel_init(panel_handle);
     ESP_LOGI(TAG, "ok");
 
 
 
     ESP_LOGI(TAG, "Panel on/off");
-    // TEST_ESP_OK(esp_lcd_panel_disp_on_off(panel_handle, true));
-    esp_lcd_panel_disp_on_off(panel_handle, true);
+    TEST_ESP_OK(esp_lcd_panel_disp_on_off(panel_handle, true));
+    // esp_lcd_panel_disp_on_off(panel_handle, true);
     ESP_LOGI(TAG, "ok");
 
     refresh_finish = xSemaphoreCreateBinary();
@@ -224,6 +209,7 @@ void app_main(void) {
 
     // TEST_ESP_OK(esp_lcd_dpi_panel_set_pattern(panel_handle, MIPI_DSI_PATTERN_BAR_HORIZONTAL));
 
+    // Test fot pixel by pixel
     // uint8_t green_pixel[3] = {0x00, 0xFF, 0x00};
     //
     // for (int y = 0; y < 20 ; y++) {
